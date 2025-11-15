@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>İzolatörlü vs İzolatörsüz Bina - Deprem Demo</title>
+  <style>
+    :root{
+      --bg:#0f172a; --panel:#111827; --text:#e5e7eb; --muted:#9ca3af; --accent:#22d3ee; --accent2:#fb7185;
+      --good:#10b981; --warn:#f59e0b; --bad:#ef4444;
+    }
+    body{margin:0; font-family:Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial; background:var(--bg); color:var(--text);}
+    header{padding:18px 22px; border-bottom:1px solid #1f2937; background:#0b1222;}
+    header h1{margin:0; font-size:20px;}
+    header p{margin:6px 0 0; color:var(--muted); font-size:13px;}
+    .wrap{display:grid; grid-template-columns: 320px 1fr; gap:16px; padding:16px;}
+    .panel{background:var(--panel); border:1px solid #1f2937; border-radius:10px; padding:14px;}
+    .panel h2{margin:4px 0 10px; font-size:15px;}
+    .control{margin-bottom:12px;}
+    .control label{display:block; font-size:13px; color:var(--muted); margin-bottom:6px;}
+    .control input[type="range"]{width:100%;}
+    .row{display:flex; gap:8px; margin-top:8px;}
+    .btn{
+      background:#0b2540; color:#cfe9ff; border:1px solid #194569; padding:8px 12px; border-radius:8px; cursor:pointer;
+    }
+    .btn.secondary{background:#1f2937; color:#d1d5db; border-color:#334155;}
+    .legend{display:flex; gap:12px; font-size:12px; color:var(--muted); margin-top:10px; flex-wrap:wrap;}
+    .dot{width:10px; height:10px; border-radius:50%;}
+    .dot.blue{background:var(--accent);}
+    .dot.pink{background:var(--accent2);}
+    canvas{width:100%; height:520px; background:#0a0f1c; border:1px solid #1f2937; border-radius:10px;}
+    .meters{display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:10px;}
+    .meter{background:#0b1222; border:1px solid #1f2937; border-radius:10px; padding:10px;}
+    .meter h3{margin:0 0 8px; font-size:13px; color:var(--muted);}
+    .bar{height:10px; background:#111827; border-radius:999px; overflow:hidden;}
+    .bar > div{height:100%; transition:width 0.08s linear, background-color 0.08s linear;}
+    .value{font-size:12px; color:var(--muted); margin-top:6px;}
+    .note{font-size:12px; color:var(--muted); margin-top:6px;}
+    footer{padding:12px 16px; color:var(--muted); font-size:12px;}
+  </style>
+</head>
+<body>
+<header>
+  <h1>İzolatörlü vs İzolatörsüz Bina – İnteraktif Deprem Tepkisi</h1>
+  <p>Aynı zeminde iki bina. Deprem şiddetini ayarlayın, tepkiyi karşılaştırın.</p>
+</header>
+
+<div class="wrap">
+  <div class="panel">
+    <h2>Kontroller</h2>
+
+    <div class="control">
+      <label>Deprem şiddeti (genlik) – küçük ⇄ büyük</label>
+      <input id="amp" type="range" min="0" max="100" value="30"/>
+    </div>
+
+    <div class="control">
+      <label>Frekans karışımı – düşük ⇄ yüksek (zemin bileşimi)</label>
+      <input id="freqMix" type="range" min="0" max="100" value="40"/>
+    </div>
+
+    <div class="control">
+      <label>Sönüm izleme (grafik izi)</label>
+      <input id="trace" type="checkbox" checked/>
+    </div>
+
+    <div class="row">
+      <button id="play" class="btn">Başlat</button>
+      <button id="pause" class="btn secondary">Durdur</button>
+      <button id="reset" class="btn secondary">Sıfırla</button>
+    </div>
+
+    <div class="legend">
+      <div style="display:flex; align-items:center; gap:6px;">
+        <div class="dot blue"></div> <span>İzolatörlü bina (LRB)</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:6px;">
+        <div class="dot pink"></div> <span>İzolatörsüz bina</span>
+      </div>
+    </div>
+
+    <div class="meters">
+      <div class="meter">
+        <h3>Üst kat ivme (LRB)</h3>
+        <div class="bar"><div id="accIso" style="width:0%; background:var(--good);"></div></div>
+        <div id="accIsoVal" class="value">0.00 g</div>
+        <div class="note">Uzun periyot, yüksek sönüm → daha düşük pik ivmeler.</div>
+      </div>
+      <div class="meter">
+        <h3>Üst kat ivme (rijit)</h3>
+        <div class="bar"><div id="accFix" style="width:0%; background:var(--good);"></div></div>
+        <div id="accFixVal" class="value">0.00 g</div>
+        <div class="note">Kısa periyot, düşük sönüm → ani ivme pikleri.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Simülasyon</h2>
+    <canvas id="view" width="1100" height="520"></canvas>
+  </div>
+</div>
+
+<footer>
+  Görselleştirme: Temel ve üst kat hareketi, katlar arası ötelenme ve ivme göstergeleri.
+</footer>
+
+<script>
+/* Basit tek serbestlik dereceli (SDOF) benzetim:
+   zemin deplasmanı: u_g(t)
+   izolatörlü: m*x'' + c*(x' - u_g') + k*(x - u_g) = 0
+   izolatörsüz: m*y'' + c_f*(y' - u_g') + k_f*(y - u_g) = 0
+   Görsel: iki bina, temel ve üst kat, kat ötelenmesi: (x - u_g) ve (y - u_g)
+*/
+const canvas = document.getElementById('view');
+const ctx = canvas.getContext('2d');
+
+const ampEl = document.getElementById('amp');
+const mixEl = document.getElementById('freqMix');
+const traceEl = document.getElementById('trace');
+const playBtn = document.getElementById('play');
+const pauseBtn = document.getElementById('pause');
+const resetBtn = document.getElementById('reset');
+
+const accIsoBar = document.getElementById('accIso');
+const accFixBar = document.getElementById('accFix');
+const accIsoVal = document.getElementById('accIsoVal');
+const accFixVal = document.getElementById('accFixVal');
+
+let running = false;
+let t = 0;
+const dt = 1/120; // 120 FPS hedef
+
+// Fizik parametreleri (normalize)
+const g = 9.81;
+const m = 1.0;
+
+const iso = {
+  k: 10,        // düşük yatay rijitlik → uzun periyot
+  c: 2.2,       // yüksek sönüm
+  x: 0, v: 0,
+  color: '#22d3ee'
+};
+
+const fix = {
+  k: 60,        // yüksek rijitlik → kısa periyot
+  c: 0.6,       // düşük sönüm
+  x: 0, v: 0,
+  color: '#fb7185'
+};
+
+// Zemin hareketi generator (karışık frekans + sin bileşen + hafif rastgelelik)
+function groundMotion(t, A, mix){
+  const f1 = 0.6 + 0.8*mix;      // “yüksek” frekans bileşen
+  const f0 = 0.15 + 0.25*(1-mix); // “düşük” frekans bileşen
+  const w1 = 2*Math.PI*f1;
+  const w0 = 2*Math.PI*f0;
+  const noise = 0.15*A*(Math.sin(2.3*t) * Math.sin(0.7*t));
+  const envelope = Math.min(1, t/3) * Math.exp(-t/60) + 0.1; // giriş-çıkış zarfı
+  const ug = envelope * (A*(0.6*Math.sin(w0*t) + 0.4*Math.sin(w1*t)) + noise);
+  const ugDot = envelope * (A*(0.6*w0*Math.cos(w0*t) + 0.4*w1*Math.cos(w1*t))
+                 + 2.3*0.15*A*Math.cos(2.3*t)*Math.sin(0.7*t)
+                 + 0.7*0.15*A*Math.sin(2.3*t)*Math.cos(0.7*t));
+  return {ug, ugDot};
+}
+
+// Basit sayısal integrasyon (semi-implicit Euler)
+function step(sys, ug, ugDot){
+  // m*x'' = -c*(x' - ug') - k*(x - ug)
+  const a = (-sys.c*(sys.v - ugDot) - sys.k*(sys.x - ug)) / m;
+  sys.v += a*dt;
+  sys.x += sys.v*dt;
+  return a;
+}
+
+// Çizim parametreleri
+const view = {
+  midY: canvas.height/2,
+  scaleX: 140, // piksel/metrye normalize
+  baseLeft: 220,
+  baseRight: 880,
+  baseY: 400,
+  height: 220,
+  width: 120
+};
+
+const traces = {
+  iso: [],
+  fix: [],
+  maxLen: 600
+};
+
+function mapColorByAccel(aAbs){
+  // 0–0.05g: iyi, 0.05–0.15g: uyarı, >0.15g: kötü
+  if (aAbs < 0.05*g) return 'var(--good)';
+  if (aAbs < 0.15*g) return 'var(--warn)';
+  return 'var(--bad)';
+}
+
+function drawScene(ug, aIso, aFix){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  // Zemin çizgisi
+  ctx.strokeStyle = '#23314d';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(80, view.baseY);
+  ctx.lineTo(canvas.width-80, view.baseY);
+  ctx.stroke();
+
+  // Zemin deplasman görseli
+  ctx.fillStyle = '#1f2937';
+  const groundOffset = ug*view.scaleX;
+  ctx.fillRect(80 + groundOffset, view.baseY+2, canvas.width-160, 10);
+
+  // Bina çizimi fonksiyonu
+  function drawBuilding(xTop, color, baseX){
+    const baseOffset = groundOffset;
+    const topOffset = xTop*view.scaleX;
+
+    // Temel (izolatörlü temelde alt katman görseli)
+    ctx.fillStyle = '#0b2540';
+    ctx.fillRect(baseX - view.width/2 + baseOffset, view.baseY-10, view.width, 10);
+
+    // İzolatör görseli (LRB için)
+    if (color === iso.color){
+      ctx.fillStyle = '#2dd4bf';
+      ctx.fillRect(baseX - view.width/2 + baseOffset, view.baseY-18, view.width, 6);
+    }
+
+    // Üst kat gövdesi
+    ctx.save();
+    ctx.translate(baseX + baseOffset, view.baseY-18);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+
+    // Gövdeyi “katlar arası ötelenme” ile eğmek: topOffset - baseOffset
+    const drift = topOffset - baseOffset;
+    ctx.beginPath();
+    ctx.moveTo(-view.width/2, -view.height);
+    ctx.lineTo(view.width/2, -view.height + drift*0.25);
+    ctx.lineTo(view.width/2, 0);
+    ctx.lineTo(-view.width/2, 0);
+    ctx.closePath();
+    ctx.stroke();
+
+    // Kat çizgileri
+    ctx.strokeStyle = '#334155';
+    ctx.lineWidth = 1;
+    for (let i=1;i<=4;i++){
+      const y = -view.height + i*(view.height/4);
+      ctx.beginPath();
+      ctx.moveTo(-view.width/2, y);
+      ctx.lineTo(view.width/2, y + drift*0.25*i/4);
+      ctx.stroke();
+    }
+
+    // Üst kat merkez noktası
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(0, -view.height, 5, 0, Math.PI*2);
+    ctx.fill();
+
+    // Şerit izi
+    if (traceEl.checked){
+      traces[color === iso.color ? 'iso' : 'fix'].push({x: baseX + topOffset, y: view.baseY-18 - view.height});
+      const arr = traces[color === iso.color ? 'iso' : 'fix'];
+      while (arr.length > traces.maxLen) arr.shift();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i=0;i<arr.length;i++){
+        const p = arr[i];
+        if (i===0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Sol: izolatörlü, Sağ: izolatörsüz
+  drawBuilding(iso.x, iso.color, view.baseLeft);
+  drawBuilding(fix.x, fix.color, view.baseRight);
+
+  // Başlık etiketleri
+  ctx.fillStyle = '#cbd5e1';
+  ctx.font = '12px system-ui';
+  ctx.fillText('İzolatörlü (LRB)', view.baseLeft - 50, view.baseY + 40);
+  ctx.fillText('İzolatörsüz (rijit)', view.baseRight - 55, view.baseY + 40);
+
+  // Kat ötelenmesi göstergesi (üst kat – temel)
+  function driftGauge(xTop, baseX, color){
+    const drift = (xTop - ug);
+    const driftPix = Math.min(120, Math.abs(drift)*view.scaleX);
+    ctx.fillStyle = color;
+    ctx.fillRect(baseX - 4, view.baseY - view.height - 150, 8, driftPix);
+  }
+  driftGauge(iso.x, view.baseLeft, iso.color);
+  driftGauge(fix.x, view.baseRight, fix.color);
+
+  // İvme barlarını güncelle
+  const aIsoAbs = Math.abs(aIso);
+  const aFixAbs = Math.abs(aFix);
+  const toPercent = (aAbs)=>Math.min(100, (aAbs/(0.35*g))*100);
+  accIsoBar.style.width = toPercent(aIsoAbs) + '%';
+  accFixBar.style.width = toPercent(aFixAbs) + '%';
+  accIsoBar.style.backgroundColor = mapColorByAccel(aIsoAbs);
+  accFixBar.style.backgroundColor = mapColorByAccel(aFixAbs);
+  accIsoVal.textContent = (aIsoAbs/g).toFixed(2) + ' g';
+  accFixVal.textContent = (aFixAbs/g).toFixed(2) + ' g';
+}
+
+function loop(){
+  if (!running) return;
+  t += dt;
+
+  const A = (parseInt(ampEl.value,10) / 100) * 0.25; // zemin genlik ölçeği ~ 0–0.25 m
+  const mix = parseInt(freqMix.value,10)/100;
+
+  const {ug, ugDot} = groundMotion(t, A, mix);
+
+  const aIso = step(iso, ug, ugDot);
+  const aFix = step(fix, ug, ugDot);
+
+  drawScene(ug, aIso, aFix);
+  requestAnimationFrame(loop);
+}
+
+playBtn.addEventListener('click', ()=>{
+  if (!running){ running = true; requestAnimationFrame(loop); }
+});
+pauseBtn.addEventListener('click', ()=>{ running = false; });
+resetBtn.addEventListener('click', ()=>{
+  running = false; t = 0;
+  iso.x = 0; iso.v = 0;
+  fix.x = 0; fix.v = 0;
+  traces.iso = []; traces.fix = [];
+  drawScene(0,0,0);
+});
+
+// Başlangıç çizimi
+drawScene(0,0,0);
+</script>
+</body>
+</html>
